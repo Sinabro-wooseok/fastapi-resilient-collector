@@ -44,6 +44,8 @@ def test_queries_use_parameters_not_string_formatting():
     store.record_run(RunRecord(chart_date=date(2026, 10, 6), status=RunStatus.FAILED,
                                error="x", finished_at=datetime.now(timezone.utc)))
     store.runs(RunStatus.FAILED, 10)
+    assert bq.loads[0][1] == "charts.runs"                     # 스트리밍 삽입이 아니라 적재 작업
+    assert bq.loads[0][2].write_disposition == bigquery.WriteDisposition.WRITE_APPEND
     sql, cfg = bq.queries[0]
     assert "@status" in sql and "failed" not in sql
     assert {p.name for p in cfg.query_parameters} == {"status", "limit"}

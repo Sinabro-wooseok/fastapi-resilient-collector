@@ -31,6 +31,7 @@ collector/
   api.py             POST /runs, POST /backfill, GET /runs, GET /health
   fake_upstream.py   장애를 골라 넣을 수 있는 가짜 외부 API(테스트·데모)
 main.py              실행 진입점
+scripts/bq_live_check.py  실제 BigQuery 확인
 tests/               18개 테스트
 ```
 
@@ -49,9 +50,27 @@ curl -X POST localhost:8000/backfill -H 'content-type: application/json' \
 
 환경 변수: `UPSTREAM_URL`, `UPSTREAM_API_KEY`, `SLACK_WEBHOOK_URL`, `BQ_DATASET`(지정하면 BigQuery 사용), `SQLITE_PATH`.
 
-## 한계
+## 실제 BigQuery 확인
 
-- BigQuery 저장소는 가짜 클라이언트로 적재 대상·쿼리 파라미터만 검증했습니다. 실제 GCP 프로젝트에서는 돌려 보지 않았습니다.
+`scripts/bq_live_check.py`는 실제 BigQuery(결제 등록 없는 샌드박스도 가능)에 붙여 같은 시나리오를 돌립니다.
+
+```bash
+GOOGLE_CLOUD_PROJECT=내-프로젝트 .venv/bin/python -m scripts.bq_live_check
+```
+
+2026-10-04 샌드박스 프로젝트(서울 리전)에서 돌린 결과:
+
+| 단계 | 결과 |
+|---|---|
+| 1차 백필 10/1~10/6 | 성공 4, 10/3 `failed`(503 계속), 10/4 `invalid`(한 줄 누락) — 두 날은 저장 안 됨, 알림 2건 |
+| 10/6을 세 번 다시 실행 | 10/6 파티션 25행 그대로(중복 없음) |
+| 장애를 풀고 2차 백필 | 10/3·10/4만 다시 수집 |
+| 최종 | 파티션 6개 × 25행, 실행 기록 success 9 · failed 1 · invalid 1 |
+
+샌드박스는 스트리밍 삽입을 막고 만료 기간을 60일 미만으로 요구해서, 실행 기록도 적재 작업으로 넣고
+`ensure_tables(partition_expiration_days=59)`로 만료를 지정합니다.
+
+## 한계
 - 실행 기록과 데이터 교체는 한 트랜잭션이 아닙니다. 교체 성공 뒤 기록 저장이 실패하면 다음 백필이 그날을 한 번 더 수집하는데, 날짜 단위 교체라 결과는 같습니다.
 
 ---
@@ -70,4 +89,4 @@ The design treats "who finds out, and how, when a run fails or data goes missing
 - **Alerts:** Slack webhook on `failed` / `invalid` runs.
 
 Run `python -m pytest -q` (18 tests) or `uvicorn main:app` for a demo against the built-in fake upstream.
-Limitation: the BigQuery store is verified with a fake client only (load destination and query parameters), not against a live GCP project.
+`scripts/bq_live_check.py` runs the same scenario against a real BigQuery project (sandbox works). On 2026-10-04 in a Seoul-region sandbox: rerunning a day three times kept its partition at 25 rows, and the second backfill re-fetched only the failed and invalid days, ending with 6 partitions × 25 rows. Run records use load jobs instead of streaming inserts so the sandbox accepts them.
